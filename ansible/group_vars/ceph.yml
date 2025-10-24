@@ -1,0 +1,19 @@
+# Adjust networks to your VPC CIDR(s)
+ceph_public_network: "10.0.2.0/24"
+ceph_cluster_network: "10.0.2.0/24"
+
+# Ceph container image (Reef/Squid/etc.)
+ceph_image: "quay.io/ceph/ceph:v18"
+
+# Dashboard bootstrap creds (change in prod)
+ceph_dash_user: "admin"
+ceph_dash_pass: "admin123!change"
+
+# Deploy OSDs on all available devices (DANGEROUS if nodes have data disks!)
+osd_all_available_devices: false
+
+# Optional labels you want to assign
+ceph_host_labels:
+  node1: ["mon", "mgr", "osd"]
+  node2: ["mon", "osd"]
+  node3: ["mon", "osd"]

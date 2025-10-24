@@ -1,0 +1,151 @@
+---
+- name: Prep all Ceph nodes (packages, time, container runtime)
+  hosts: ceph
+  become: true
+  gather_facts: yes
+
+  tasks:
+    - name: Ensure basic packages present
+      package:
+        name:
+          - curl
+          - lvm2
+          - chrony
+        state: present
+
+    - name: Enable & start chrony
+      service:
+        name: "{{ 'chronyd' if ansible_facts.os_family in ['RedHat', 'Amazon'] else 'chrony' }}"
+        state: started
+        enabled: true
+
+    - name: Install container runtime (Podman preferred; fallback to Docker)
+      block:
+        - name: Try Podman first
+          package:
+            name: podman
+            state: present
+          register: podman_pkg
+          failed_when: false
+
+        - name: If Podman absent, install Docker
+          package:
+            name: "{{ 'docker' if ansible_facts.os_family in ['Debian', 'Ubuntu'] else 'docker' }}"
+            state: present
+          when: podman_pkg is failed
+          register: docker_pkg
+          failed_when: false
+
+        - name: Enable Docker if installed
+          service:
+            name: docker
+            state: started
+            enabled: true
+          when: docker_pkg is defined and (docker_pkg is succeeded)
+
+    - name: Download cephadm script
+      get_url:
+        url: "https://raw.githubusercontent.com/ceph/ceph/master/src/cephadm/cephadm"
+        dest: /usr/local/sbin/cephadm
+        mode: "0755"
+
+    - name: Install cephadm (create /usr/sbin/cephadm symlink if needed)
+      file:
+        src: /usr/local/sbin/cephadm
+        dest: /usr/sbin/cephadm
+        state: link
+
+- name: Bootstrap cluster on first node
+  hosts: node1
+  become: true
+  gather_facts: no
+
+  vars:
+    mon_ip: "{{ hostvars['node1'].ansible_host | default('10.0.2.10') }}"
+
+  tasks:
+    - name: Bootstrap Ceph cluster if not already
+      shell: >
+        cephadm bootstrap
+        --mon-ip {{ mon_ip }}
+        --initial-dashboard-user {{ ceph_dash_user }}
+        --initial-dashboard-password '{{ ceph_dash_pass }}'
+        --cluster-network {{ ceph_cluster_network }}
+        --image {{ ceph_image }}
+      args:
+        creates: /etc/ceph/ceph.conf
+
+    - name: Pull the cephadm SSH pubkey
+      shell: cephadm get-pub-key
+      register: ceph_pub
+      changed_when: false
+
+    - name: Save cephadm public key locally (on control machine)
+      copy:
+        content: "{{ ceph_pub.stdout }}"
+        dest: "./cephadm.pub"
+      delegate_to: localhost
+      run_once: true
+
+- name: Authorize cephadm key on all hosts and add them to the cluster
+  hosts: ceph
+  become: true
+  gather_facts: no
+
+  tasks:
+    - name: Ensure cephadm SSH pubkey is authorized for root
+      authorized_key:
+        user: root
+        state: present
+        key: "{{ lookup('file', 'cephadm.pub') }}"
+      vars:
+        ansible_become_user: root
+
+- name: Add hosts to Ceph orchestrator (from bootstrap node)
+  hosts: node1
+  become: true
+  gather_facts: no
+
+  tasks:
+    - name: Add all ceph hosts to orchestrator by IP/hostname
+      shell: >
+        ceph orch host add {{ item }} {{ hostvars[item].ansible_host | default(item) }}
+      loop: "{{ groups['ceph'] }}"
+      args:
+        warn: false
+      register: add_hosts
+      changed_when: "'Added' in add_hosts.stdout or 'Added' in add_hosts.results | to_json"
+
+    - name: Apply labels as desired
+      when: ceph_host_labels is defined
+      loop: "{{ groups['ceph'] }}"
+      loop_control:
+        loop_var: hostn
+      block:
+        - name: Label host
+          shell: >
+            ceph orch host label add {{ hostn }} {{ label }}
+          loop: "{{ ceph_host_labels.get(hostn, []) }}"
+          loop_control:
+            loop_var: label
+          args:
+            warn: false
+
+    - name: Ensure 3 MONs and 2 MGRs (safe defaults for tiny clusters)
+      shell: |
+        ceph orch apply mon 3
+        ceph orch apply mgr 2
+      args: { warn: false }
+
+    - name: (Optional) Deploy OSDs on all available devices
+      when: osd_all_available_devices | bool
+      shell: ceph orch apply osd --all-available-devices
+      args: { warn: false }
+
+    - name: Wait for healthy-ish cluster (30s poll, 20 tries)
+      shell: ceph -s --format json
+      register: ceph_status
+      retries: 20
+      delay: 30
+      until: ceph_status.rc == 0
+      changed_when: false
