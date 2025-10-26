@@ -1,0 +1,7 @@
+export BASTION_IP=3.91.12.45
+export NODE1_IP=10.0.2.10
+export NODE2_IP=10.0.2.11
+export NODE3_IP=10.0.2.12
+
+ansible-playbook -i inventory.ini ceph_deploy.yml
+
