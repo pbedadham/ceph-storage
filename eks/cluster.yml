@@ -1,0 +1,26 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: rook-ceph-lab
+  region: us-west-2
+  version: "1.33"
+
+availabilityZones:
+  - us-west-2a
+  - us-west-2b
+  - us-west-2c
+
+managedNodeGroups:
+  - name: storage-nodes
+    spot: true
+    instanceType: r6a.xlarge
+    minSize: 3
+    maxSize: 4
+    desiredCapacity: 3
+    availabilityZones: ["us-west-2a", "us-west-2b", "us-west-2c"]
+    volumeSize: 50
+    additionalVolumes:
+      - volumeName: /dev/sdh
+        volumeSize: 100
+        volumeType: gp3
